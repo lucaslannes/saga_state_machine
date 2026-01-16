@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2026-01-17
+
+### Changed
+
+- Enhanced README with detailed MassTransit comparison table
+- Added side-by-side code examples (C# vs Dart)
+- Added "Use Cases" section with common scenarios
+- Added "Advanced Features" section with custom Activity and Repository examples
+- Improved attribution and links to MassTransit documentation
+
+### Fixed
+
+- Updated LICENSE copyright to saga_state_machine contributors
+
 ## [1.0.0] - 2026-01-17
 
 ### Added
