@@ -1,0 +1,23 @@
+# Auto detect text files and perform LF normalization
+* text=auto
+
+# Dart files
+*.dart text diff=dart
+
+# Documentation
+*.md text
+*.txt text
+
+# Config files
+*.yaml text
+*.yml text
+*.json text
+
+# Scripts
+*.sh text eol=lf
+
+# Binary files
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary

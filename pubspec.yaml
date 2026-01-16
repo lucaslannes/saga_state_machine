@@ -1,0 +1,22 @@
+name: saga_state_machine
+description: A MassTransit-style state machine framework for Dart. Declarative, event-driven saga pattern with fluent builder API.
+version: 1.0.0
+repository: https://github.com/speed1057/saga_state_machine
+issue_tracker: https://github.com/speed1057/saga_state_machine/issues
+
+topics:
+  - state-machine
+  - saga
+  - event-driven
+  - workflow
+  - finite-state-machine
+
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+
+dependencies:
+  meta: ^1.9.0
+
+dev_dependencies:
+  test: ^1.24.0
+  lints: ^3.0.0
