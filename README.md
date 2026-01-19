@@ -16,6 +16,78 @@ A **saga** is a long-running process that coordinates multiple events over time.
 
 This pattern is widely used in distributed systems, microservices, and event-driven architectures. MassTransit popularized this approach in the .NET ecosystem, and `saga_state_machine` brings the same declarative API to Dart.
 
+### State Transition Example
+
+The following diagram shows an order processing saga with state transitions, events, and automatic timeout handling:
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> Pending : OrderCreated
+    Pending --> Paid : PaymentReceived
+    Pending --> Cancelled : Timeout (24h)
+    Paid --> Shipped : OrderShipped
+    Shipped --> Delivered : OrderDelivered
+    Delivered --> [*]
+    Cancelled --> [*]
+
+    note right of Pending
+        Saga persists state
+        across events
+    end note
+```
+
+### Architecture Overview
+
+This diagram illustrates how events flow through the saga state machine:
+
+```mermaid
+flowchart TB
+    subgraph External["External Events"]
+        E1[OrderCreated]
+        E2[PaymentReceived]
+        E3[Timeout Event]
+    end
+
+    subgraph StateMachine["Saga State Machine"]
+        direction TB
+        C[Correlate by ID]
+        R[(Saga Repository)]
+        H{Event Handler}
+        A[Activities]
+        T[State Transition]
+    end
+
+    subgraph Output["Side Effects"]
+        N[Notifications]
+        DB[(Persistence)]
+        SC[Scheduled Events]
+    end
+
+    E1 --> C
+    E2 --> C
+    E3 --> C
+    C --> |"Find/Create Saga"| R
+    R --> H
+    H --> |"Execute"| A
+    H --> |"Compensate on failure"| A
+    A --> T
+    T --> |"Update State"| R
+    T --> N
+    T --> DB
+    T --> SC
+    SC -.-> |"Future Event"| E3
+```
+
+**Key Concepts:**
+
+1. **Event Correlation** - Events are routed to the correct saga instance by ID
+2. **Saga Repository** - Persists saga state (in-memory by default, pluggable)
+3. **Event Handlers** - Process events based on current state
+4. **Activities** - Execute side effects with optional compensation (rollback)
+5. **State Transitions** - Move saga to new state, trigger side effects
+6. **Scheduled Events** - Support timeouts and delayed event dispatch
+
 ## Features
 
 - **Declarative API**: Define state machines in a readable, self-documenting way
@@ -117,15 +189,17 @@ print(order?.status); // OrderStatus.paid
 
 ### State Machine Methods
 
-| Method                             | Description                     |
-| ---------------------------------- | ------------------------------- |
-| `correlate<E>((e) => id)`          | Define event correlation        |
-| `initially(when<E>()...)`          | Handle new saga creation        |
-| `during(state, when<E>()...)`      | Handle events in specific state |
-| `duringAny(when<E>()...)`          | Handle events in any state      |
-| `timeout(duration, transitionTo:)` | State timeout                   |
-| `whenFinalized(execute:)`          | Cleanup on saga completion      |
-| `onAnyTransition(callback)`        | Listen to all transitions       |
+| Method                             | Description                                |
+| ---------------------------------- | ------------------------------------------ |
+| `correlate<E>((e) => id)`          | Define event correlation                   |
+| `initially(when<E>()...)`          | Handle new saga creation                   |
+| `during(state, when<E>()...)`      | Handle events in specific state            |
+| `duringAny(when<E>()...)`          | Handle events in any state                 |
+| `timeout(duration, transitionTo:)` | State timeout                              |
+| `whenFinalized(execute:)`          | Cleanup on saga completion                 |
+| `onAnyTransition(callback)`        | Listen to all state transitions            |
+| `onSagaUpdated(callback)`          | Listen to property changes (no transition) |
+| `onSagaFinalized(callback)`        | Listen to saga finalization                |
 
 ### Event Handler Methods
 
@@ -236,6 +310,25 @@ class PostgresSagaRepository extends SagaRepository<OrderSaga> {
 // Use it
 machine.useRepository(PostgresSagaRepository());
 ```
+
+### Property Updates Without State Transitions
+
+Sometimes you need to update saga properties without changing state (e.g., mute toggle, duration updates). Use handlers with `.set()` but no `.transitionTo()`:
+
+```dart
+during(CallStatus.connected, [
+  // These update properties but don't change state
+  when<MuteToggled>().set((saga, e) => saga.isMuted = e.isMuted),
+  when<DurationUpdated>().set((saga, e) => saga.duration = e.duration),
+]);
+
+// Listen to property-only changes
+machine.onSagaUpdated((saga) {
+  print('Saga updated: ${saga.isMuted}, ${saga.duration}');
+});
+```
+
+This follows the MassTransit pattern where `.Set()` / `.Then()` without `TransitionTo()` still persists and notifies changes.
 
 ## Inspiration & Attribution
 

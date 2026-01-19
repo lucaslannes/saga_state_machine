@@ -14,6 +14,9 @@ typedef TransitionCallback<TSaga extends Saga, TState> = void Function(
   TState to,
 );
 
+/// Callback for saga updates (property changes without state transition).
+typedef UpdateCallback<TSaga extends Saga> = void Function(TSaga saga);
+
 /// Callback for saga finalization.
 typedef FinalizeCallback<TSaga extends Saga> = void Function(TSaga saga);
 
@@ -43,13 +46,13 @@ typedef EventCorrelator<TEvent> = String Function(TEvent event);
 abstract class SagaStateMachine<TSaga extends Saga, TState> {
   final Map<Type, Function> _correlators = {};
   final List<_EventHandlerEntry<TSaga, TState>> _initialHandlers = [];
-  final Map<TState, List<_EventHandlerEntry<TSaga, TState>>> _stateHandlers =
-      {};
+  final Map<TState, List<_EventHandlerEntry<TSaga, TState>>> _stateHandlers = {};
   final List<_EventHandlerEntry<TSaga, TState>> _anyStateHandlers = [];
   final Map<TState, TimeoutHandler<TSaga, TState>> _timeouts = {};
   final List<Activity<TSaga, void>> _finalizeActivities = [];
 
   TransitionCallback<TSaga, TState>? _onTransition;
+  UpdateCallback<TSaga>? _onUpdate;
   FinalizeCallback<TSaga>? _onFinalize;
 
   late final Scheduler _scheduler;
@@ -103,8 +106,7 @@ abstract class SagaStateMachine<TSaga extends Saga, TState> {
   ///   when<OrderCreated>().transitionTo(OrderStatus.pending),
   /// );
   /// ```
-  void initially(EventHandler<TSaga, dynamic, TState> handler,
-      [List<EventHandler<TSaga, dynamic, TState>>? more]) {
+  void initially(EventHandler<TSaga, dynamic, TState> handler, [List<EventHandler<TSaga, dynamic, TState>>? more]) {
     _initialHandlers.add(_EventHandlerEntry(handler));
     if (more != null) {
       for (final h in more) {
@@ -139,8 +141,7 @@ abstract class SagaStateMachine<TSaga extends Saga, TState> {
   ///   when<ForceCancel>().transitionTo(OrderStatus.cancelled).finalize(),
   /// );
   /// ```
-  void duringAny(EventHandler<TSaga, dynamic, TState> handler,
-      [List<EventHandler<TSaga, dynamic, TState>>? more]) {
+  void duringAny(EventHandler<TSaga, dynamic, TState> handler, [List<EventHandler<TSaga, dynamic, TState>>? more]) {
     _anyStateHandlers.add(_EventHandlerEntry(handler));
     if (more != null) {
       for (final h in more) {
@@ -178,9 +179,7 @@ abstract class SagaStateMachine<TSaga extends Saga, TState> {
   ///   execute: CleanupActivity(),
   /// );
   /// ```
-  void whenFinalized(
-      {Activity<TSaga, void>? execute,
-      List<Activity<TSaga, void>>? activities}) {
+  void whenFinalized({Activity<TSaga, void>? execute, List<Activity<TSaga, void>>? activities}) {
     if (execute != null) _finalizeActivities.add(execute);
     if (activities != null) _finalizeActivities.addAll(activities);
   }
@@ -188,6 +187,12 @@ abstract class SagaStateMachine<TSaga extends Saga, TState> {
   /// Register callback for any state transition.
   void onAnyTransition(TransitionCallback<TSaga, TState> callback) {
     _onTransition = callback;
+  }
+
+  /// Register callback for saga updates (property changes without state transition).
+  /// This is called when saga properties are modified but no state transition occurs.
+  void onSagaUpdated(UpdateCallback<TSaga> callback) {
+    _onUpdate = callback;
   }
 
   /// Register callback for saga finalization.
@@ -220,8 +225,7 @@ abstract class SagaStateMachine<TSaga extends Saga, TState> {
   Future<TSaga?> dispatch<TEvent>(TEvent event) async {
     final correlationId = _getCorrelationId(event);
     if (correlationId == null) {
-      throw StateError(
-          'No correlator registered for event type ${event.runtimeType}');
+      throw StateError('No correlator registered for event type ${event.runtimeType}');
     }
 
     var saga = _repository.getById(correlationId);
@@ -287,23 +291,29 @@ abstract class SagaStateMachine<TSaga extends Saga, TState> {
     await handler.executeWith(saga, event, _scheduler, currentState);
 
     // Handle transition
-    final targetState =
-        handler.getTargetStateWith(saga, event, _scheduler, currentState);
+    final targetState = handler.getTargetStateWith(saga, event, _scheduler, currentState);
     if (targetState != null && targetState != currentState) {
+      // For initial transitions, use the saga's initial state as "from"
+      final fromState = currentState ?? getState(saga);
       setState(saga, targetState);
       saga.markUpdated();
-      if (currentState != null) {
-        _onTransition?.call(saga, currentState, targetState);
-      }
+      _onTransition?.call(saga, fromState, targetState);
 
       // Set up timeout for new state if defined
       _setupStateTimeout(saga, targetState);
+    } else {
+      // No state transition, but saga may have been updated (e.g., mute toggle)
+      // Notify listeners if the handler had setters, activities, or actions that could modify the saga
+      final hasModifiers = handler.hasModifiers;
+      if (hasModifiers) {
+        saga.markUpdated();
+        _onUpdate?.call(saga);
+      }
     }
 
     // Schedule events
     if (handler.scheduleTimeout != null && handler.scheduleEventType != null) {
-      _scheduleEvent(
-          saga.id, handler.scheduleEventType!, handler.scheduleTimeout!);
+      _scheduleEvent(saga.id, handler.scheduleEventType!, handler.scheduleTimeout!);
     }
 
     // Handle finalization
@@ -398,8 +408,7 @@ class _EventHandlerEntry<TSaga extends Saga, TState> {
 }
 
 /// Marker class for timeout configuration.
-class _TimeoutMarker<TSaga extends Saga, TState>
-    extends EventHandler<TSaga, dynamic, TState> {
+class _TimeoutMarker<TSaga extends Saga, TState> extends EventHandler<TSaga, dynamic, TState> {
   final Duration duration;
   final TState targetState;
   @override

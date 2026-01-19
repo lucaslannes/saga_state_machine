@@ -110,6 +110,7 @@ class TaskStateMachine extends SagaStateMachine<TaskSaga, TaskStatus> {
   final List<String> transitionLog = [];
   final List<String> finalizeLog = [];
   final List<String> activityLog = [];
+  final List<String> updateLog = [];
 
   TaskStateMachine() {
     _configureCorrelation();
@@ -171,9 +172,7 @@ class TaskStateMachine extends SagaStateMachine<TaskSaga, TaskStatus> {
           ..progressPercent = e.percent
           ..logs.add('Progress: ${e.percent}%')),
         [
-          when<TaskPaused>()
-              .set((saga, e) => saga.logs.add('Task paused'))
-              .transitionTo(TaskStatus.paused),
+          when<TaskPaused>().set((saga, e) => saga.logs.add('Task paused')).transitionTo(TaskStatus.paused),
           when<TaskCompleted>()
               .where((e) => true) // Always match
               .set((saga, e) => saga
@@ -216,6 +215,10 @@ class TaskStateMachine extends SagaStateMachine<TaskSaga, TaskStatus> {
   void _configureCallbacks() {
     onAnyTransition((saga, from, to) {
       transitionLog.add('${saga.id}: $from → $to');
+    });
+
+    onSagaUpdated((saga) {
+      updateLog.add('Updated: ${saga.id} (progress: ${saga.progressPercent}%)');
     });
 
     onSagaFinalized((saga) {
@@ -841,14 +844,10 @@ void main() {
     });
 
     test('matches() respects filter', () {
-      final handler =
-          EventHandler<TaskSaga, HighPriorityTaskCreated, TaskStatus>()
-              .where((e) => e.priority >= 5);
+      final handler = EventHandler<TaskSaga, HighPriorityTaskCreated, TaskStatus>().where((e) => e.priority >= 5);
 
-      expect(
-          handler.matches(HighPriorityTaskCreated('id', 'title', 5)), isTrue);
-      expect(
-          handler.matches(HighPriorityTaskCreated('id', 'title', 3)), isFalse);
+      expect(handler.matches(HighPriorityTaskCreated('id', 'title', 5)), isTrue);
+      expect(handler.matches(HighPriorityTaskCreated('id', 'title', 3)), isFalse);
     });
 
     test('fluent methods return this for chaining', () {
@@ -861,16 +860,13 @@ void main() {
     });
 
     test('where() creates new handler with filter', () {
-      final original =
-          EventHandler<TaskSaga, HighPriorityTaskCreated, TaskStatus>();
+      final original = EventHandler<TaskSaga, HighPriorityTaskCreated, TaskStatus>();
       final filtered = original.where((e) => e.priority > 5);
 
       // Different instances
       expect(filtered, isNot(same(original)));
-      expect(
-          filtered.matches(HighPriorityTaskCreated('id', 'title', 6)), isTrue);
-      expect(
-          filtered.matches(HighPriorityTaskCreated('id', 'title', 5)), isFalse);
+      expect(filtered.matches(HighPriorityTaskCreated('id', 'title', 6)), isTrue);
+      expect(filtered.matches(HighPriorityTaskCreated('id', 'title', 5)), isFalse);
     });
   });
 
@@ -959,6 +955,166 @@ void main() {
     });
   });
 
+  group('onSagaUpdated Callback', () {
+    late TaskStateMachine machine;
+
+    setUp(() {
+      machine = TaskStateMachine();
+    });
+
+    tearDown(() {
+      machine.dispose();
+    });
+
+    test('onSagaUpdated is called for property-only changes (no state transition)', () async {
+      await machine.dispatch(TaskCreated('task-1', 'Test Task'));
+      await machine.dispatch(TaskStarted('task-1'));
+      machine.updateLog.clear();
+
+      // Progress update has .set() but no .transitionTo()
+      await machine.dispatch(TaskProgressUpdated('task-1', 50));
+
+      expect(machine.updateLog, contains('Updated: task-1 (progress: 50%)'));
+    });
+
+    test('onSagaUpdated is NOT called for state transitions', () async {
+      machine.updateLog.clear();
+
+      await machine.dispatch(TaskCreated('task-1', 'Test Task'));
+      await machine.dispatch(TaskStarted('task-1'));
+
+      // State transitions should only fire onAnyTransition, not onSagaUpdated
+      expect(machine.updateLog, isEmpty);
+      expect(machine.transitionLog, isNotEmpty);
+    });
+
+    test('onSagaUpdated is called multiple times for multiple property updates', () async {
+      await machine.dispatch(TaskCreated('task-1', 'Test Task'));
+      await machine.dispatch(TaskStarted('task-1'));
+      machine.updateLog.clear();
+
+      await machine.dispatch(TaskProgressUpdated('task-1', 10));
+      await machine.dispatch(TaskProgressUpdated('task-1', 25));
+      await machine.dispatch(TaskProgressUpdated('task-1', 50));
+
+      expect(machine.updateLog.length, equals(3));
+      expect(machine.updateLog[0], contains('progress: 10%'));
+      expect(machine.updateLog[1], contains('progress: 25%'));
+      expect(machine.updateLog[2], contains('progress: 50%'));
+    });
+
+    test('saga.markUpdated() is called for property-only changes', () async {
+      await machine.dispatch(TaskCreated('task-1', 'Test Task'));
+      await machine.dispatch(TaskStarted('task-1'));
+
+      final saga = machine.getSaga('task-1');
+      final beforeUpdate = saga!.updatedAt;
+
+      await Future.delayed(const Duration(milliseconds: 10));
+      await machine.dispatch(TaskProgressUpdated('task-1', 50));
+
+      final afterUpdate = machine.getSaga('task-1')!.updatedAt;
+      expect(afterUpdate.isAfter(beforeUpdate), isTrue);
+    });
+
+    test('onSagaUpdated receives correct saga instance', () async {
+      TaskSaga? capturedSaga;
+      final testMachine = _UpdateCallbackTestMachine(
+        onUpdate: (saga) => capturedSaga = saga,
+      );
+
+      await testMachine.dispatch(TaskCreated('task-1', 'Test'));
+      await testMachine.dispatch(TaskStarted('task-1'));
+      await testMachine.dispatch(TaskProgressUpdated('task-1', 75));
+
+      expect(capturedSaga, isNotNull);
+      expect(capturedSaga!.id, equals('task-1'));
+      expect(capturedSaga!.progressPercent, equals(75));
+
+      testMachine.dispose();
+    });
+
+    test('onSagaUpdated not called when handler has no modifiers', () async {
+      final testMachine = _NoModifierMachine();
+
+      await testMachine.dispatch(TaskCreated('task-1', 'Test'));
+      testMachine.updateLog.clear();
+
+      // Dispatch event handled by no-modifier handler
+      await testMachine.dispatch(_NoOpEvent('task-1'));
+
+      expect(testMachine.updateLog, isEmpty);
+
+      testMachine.dispose();
+    });
+
+    test('onSagaUpdated works with activities (not just setters)', () async {
+      final testMachine = _ActivityOnlyMachine();
+
+      await testMachine.dispatch(TaskCreated('task-1', 'Test'));
+      testMachine.updateLog.clear();
+
+      await testMachine.dispatch(_ActivityEvent('task-1'));
+
+      expect(testMachine.updateLog, contains('Updated: task-1'));
+
+      testMachine.dispose();
+    });
+
+    test('onSagaUpdated works with actions (then() calls)', () async {
+      final testMachine = _ActionOnlyMachine();
+
+      await testMachine.dispatch(TaskCreated('task-1', 'Test'));
+      testMachine.updateLog.clear();
+
+      await testMachine.dispatch(_ActionEvent('task-1'));
+
+      expect(testMachine.updateLog, contains('Updated: task-1'));
+
+      testMachine.dispose();
+    });
+  });
+
+  group('Initial Transition Callback', () {
+    late TaskStateMachine machine;
+
+    setUp(() {
+      machine = TaskStateMachine();
+    });
+
+    tearDown(() {
+      machine.dispose();
+    });
+
+    test('onAnyTransition is called for initial state transition', () async {
+      machine.transitionLog.clear();
+
+      await machine.dispatch(TaskCreated('task-1', 'Test Task'));
+
+      // Initial transition should fire callback with saga's initial state as "from"
+      expect(machine.transitionLog, isNotEmpty);
+      expect(
+        machine.transitionLog.first,
+        equals('task-1: TaskStatus.created → TaskStatus.created'),
+      );
+    });
+
+    test('initial transition uses getState(saga) as fromState', () async {
+      String? capturedFrom;
+      final testMachine = _TransitionCallbackTestMachine(
+        onTransition: (saga, from, to) => capturedFrom = from.toString(),
+      );
+
+      await testMachine.dispatch(TaskCreated('task-1', 'Test'));
+
+      // fromState should be the saga's initial state (created), not null
+      expect(capturedFrom, isNotNull);
+      expect(capturedFrom, contains('created'));
+
+      testMachine.dispose();
+    });
+  });
+
   group('Edge Cases', () {
     late TaskStateMachine machine;
 
@@ -1009,8 +1165,7 @@ void main() {
 
       // Verify states
       for (var i = 0; i < 5; i++) {
-        expect(
-            machine.getSaga('task-$i')!.status, equals(TaskStatus.inProgress));
+        expect(machine.getSaga('task-$i')!.status, equals(TaskStatus.inProgress));
       }
       for (var i = 5; i < 10; i++) {
         expect(machine.getSaga('task-$i')!.status, equals(TaskStatus.created));
@@ -1035,3 +1190,182 @@ void main() {
 
 // Helper class for testing uncorrelated events
 class _UncorrelatedEvent {}
+
+// Helper event for no-modifier test
+class _NoOpEvent {
+  final String taskId;
+  _NoOpEvent(this.taskId);
+}
+
+// Helper event for activity-only test
+class _ActivityEvent {
+  final String taskId;
+  _ActivityEvent(this.taskId);
+}
+
+// Helper event for action-only test
+class _ActionEvent {
+  final String taskId;
+  _ActionEvent(this.taskId);
+}
+
+// Test machine that captures onSagaUpdated callback
+class _UpdateCallbackTestMachine extends SagaStateMachine<TaskSaga, TaskStatus> {
+  final void Function(TaskSaga) onUpdate;
+
+  _UpdateCallbackTestMachine({required this.onUpdate}) {
+    correlate<TaskCreated>((e) => e.taskId);
+    correlate<TaskStarted>((e) => e.taskId);
+    correlate<TaskProgressUpdated>((e) => e.taskId);
+
+    initially(
+      when<TaskCreated>().transitionTo(TaskStatus.created),
+    );
+
+    during(
+      TaskStatus.created,
+      when<TaskStarted>().transitionTo(TaskStatus.inProgress),
+    );
+
+    during(
+      TaskStatus.inProgress,
+      when<TaskProgressUpdated>().set((saga, e) => saga.progressPercent = e.percent),
+    );
+
+    onSagaUpdated(onUpdate);
+  }
+
+  @override
+  TaskSaga createSaga(String correlationId) => TaskSaga()..id = correlationId;
+
+  @override
+  TaskStatus getState(TaskSaga saga) => saga.status;
+
+  @override
+  void setState(TaskSaga saga, TaskStatus state) => saga.status = state;
+}
+
+// Test machine with handler that has no modifiers (no set, activity, or action)
+class _NoModifierMachine extends SagaStateMachine<TaskSaga, TaskStatus> {
+  final List<String> updateLog = [];
+
+  _NoModifierMachine() {
+    correlate<TaskCreated>((e) => e.taskId);
+    correlate<_NoOpEvent>((e) => e.taskId);
+
+    initially(
+      when<TaskCreated>().transitionTo(TaskStatus.created),
+    );
+
+    during(
+      TaskStatus.created,
+      // Handler with no modifiers - just matches the event
+      when<_NoOpEvent>(),
+    );
+
+    onSagaUpdated((saga) {
+      updateLog.add('Updated: ${saga.id}');
+    });
+  }
+
+  @override
+  TaskSaga createSaga(String correlationId) => TaskSaga()..id = correlationId;
+
+  @override
+  TaskStatus getState(TaskSaga saga) => saga.status;
+
+  @override
+  void setState(TaskSaga saga, TaskStatus state) => saga.status = state;
+}
+
+// Test machine with activity-only handler (no setter)
+class _ActivityOnlyMachine extends SagaStateMachine<TaskSaga, TaskStatus> {
+  final List<String> updateLog = [];
+
+  _ActivityOnlyMachine() {
+    correlate<TaskCreated>((e) => e.taskId);
+    correlate<_ActivityEvent>((e) => e.taskId);
+
+    initially(
+      when<TaskCreated>().transitionTo(TaskStatus.created),
+    );
+
+    during(
+      TaskStatus.created,
+      when<_ActivityEvent>().execute(FunctionActivity((ctx) {
+        ctx.saga.logs.add('Activity executed');
+      })),
+    );
+
+    onSagaUpdated((saga) {
+      updateLog.add('Updated: ${saga.id}');
+    });
+  }
+
+  @override
+  TaskSaga createSaga(String correlationId) => TaskSaga()..id = correlationId;
+
+  @override
+  TaskStatus getState(TaskSaga saga) => saga.status;
+
+  @override
+  void setState(TaskSaga saga, TaskStatus state) => saga.status = state;
+}
+
+// Test machine with action-only handler (using then())
+class _ActionOnlyMachine extends SagaStateMachine<TaskSaga, TaskStatus> {
+  final List<String> updateLog = [];
+
+  _ActionOnlyMachine() {
+    correlate<TaskCreated>((e) => e.taskId);
+    correlate<_ActionEvent>((e) => e.taskId);
+
+    initially(
+      when<TaskCreated>().transitionTo(TaskStatus.created),
+    );
+
+    during(
+      TaskStatus.created,
+      when<_ActionEvent>().then((ctx) async {
+        ctx.saga.logs.add('Action executed');
+      }),
+    );
+
+    onSagaUpdated((saga) {
+      updateLog.add('Updated: ${saga.id}');
+    });
+  }
+
+  @override
+  TaskSaga createSaga(String correlationId) => TaskSaga()..id = correlationId;
+
+  @override
+  TaskStatus getState(TaskSaga saga) => saga.status;
+
+  @override
+  void setState(TaskSaga saga, TaskStatus state) => saga.status = state;
+}
+
+// Test machine that captures transition callback
+class _TransitionCallbackTestMachine extends SagaStateMachine<TaskSaga, TaskStatus> {
+  final void Function(TaskSaga, TaskStatus, TaskStatus) onTransition;
+
+  _TransitionCallbackTestMachine({required this.onTransition}) {
+    correlate<TaskCreated>((e) => e.taskId);
+
+    initially(
+      when<TaskCreated>().transitionTo(TaskStatus.created),
+    );
+
+    onAnyTransition(onTransition);
+  }
+
+  @override
+  TaskSaga createSaga(String correlationId) => TaskSaga()..id = correlationId;
+
+  @override
+  TaskStatus getState(TaskSaga saga) => saga.status;
+
+  @override
+  void setState(TaskSaga saga, TaskStatus state) => saga.status = state;
+}

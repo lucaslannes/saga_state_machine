@@ -8,19 +8,16 @@ import 'scheduler.dart';
 /// Callback types for saga operations.
 
 /// Function that sets saga properties from an event.
-typedef SagaSetter<TSaga extends Saga, TEvent> = void Function(
-    TSaga saga, TEvent event);
+typedef SagaSetter<TSaga extends Saga, TEvent> = void Function(TSaga saga, TEvent event);
 
 /// Async action executed during event handling.
-typedef SagaAction<TSaga extends Saga, TEvent> = FutureOr<void> Function(
-    BehaviorContext<TSaga, TEvent> context);
+typedef SagaAction<TSaga extends Saga, TEvent> = FutureOr<void> Function(BehaviorContext<TSaga, TEvent> context);
 
 /// Predicate function to filter events.
 typedef EventFilter<TEvent> = bool Function(TEvent event);
 
 /// Function that dynamically resolves the target state.
-typedef StateResolver<TSaga extends Saga, TEvent, TState> = TState Function(
-    BehaviorContext<TSaga, TEvent> context);
+typedef StateResolver<TSaga extends Saga, TEvent, TState> = TState Function(BehaviorContext<TSaga, TEvent> context);
 
 /// Defines how to handle a specific event type.
 ///
@@ -84,8 +81,7 @@ class EventHandler<TSaga extends Saga, TEvent, TState> {
   }
 
   /// Execute an activity (with optional compensation).
-  EventHandler<TSaga, TEvent, TState> execute(
-      Activity<TSaga, TEvent> activity) {
+  EventHandler<TSaga, TEvent, TState> execute(Activity<TSaga, TEvent> activity) {
     _activities.add(activity);
     return this;
   }
@@ -97,8 +93,7 @@ class EventHandler<TSaga extends Saga, TEvent, TState> {
   }
 
   /// Transition to a dynamically determined state.
-  EventHandler<TSaga, TEvent, TState> transitionToState(
-      StateResolver<TSaga, TEvent, TState> resolver) {
+  EventHandler<TSaga, TEvent, TState> transitionToState(StateResolver<TSaga, TEvent, TState> resolver) {
     _stateResolver = resolver;
     return this;
   }
@@ -110,8 +105,7 @@ class EventHandler<TSaga extends Saga, TEvent, TState> {
   }
 
   /// Schedule a timeout event.
-  EventHandler<TSaga, TEvent, TState> schedule<TTimeoutEvent>(
-      Duration timeout) {
+  EventHandler<TSaga, TEvent, TState> schedule<TTimeoutEvent>(Duration timeout) {
     _scheduleTimeout = timeout;
     _scheduleEventType = TTimeoutEvent;
     return this;
@@ -134,8 +128,7 @@ class EventHandler<TSaga extends Saga, TEvent, TState> {
 
   /// Execute all setters, activities, and actions with the given saga and event.
   /// This method maintains type safety by executing with the proper TEvent type.
-  Future<void> executeWith(TSaga saga, dynamic event, Scheduler scheduler,
-      dynamic previousState) async {
+  Future<void> executeWith(TSaga saga, dynamic event, Scheduler scheduler, dynamic previousState) async {
     final typedEvent = event as TEvent;
 
     // Apply setters
@@ -162,8 +155,7 @@ class EventHandler<TSaga extends Saga, TEvent, TState> {
   }
 
   /// Get the target state for transition (uses dynamic event cast internally).
-  TState? getTargetStateWith(
-      TSaga saga, dynamic event, Scheduler scheduler, dynamic previousState) {
+  TState? getTargetStateWith(TSaga saga, dynamic event, Scheduler scheduler, dynamic previousState) {
     final typedEvent = event as TEvent;
     final context = BehaviorContext<TSaga, TEvent>(
       saga: saga,
@@ -179,11 +171,13 @@ class EventHandler<TSaga extends Saga, TEvent, TState> {
   List<SagaSetter<TSaga, TEvent>> get setters => List.unmodifiable(_setters);
 
   /// Get all activities.
-  List<Activity<TSaga, TEvent>> get activities =>
-      List.unmodifiable(_activities);
+  List<Activity<TSaga, TEvent>> get activities => List.unmodifiable(_activities);
 
   /// Get all actions.
   List<SagaAction<TSaga, TEvent>> get actions => List.unmodifiable(_actions);
+
+  /// Whether this handler has any setters, activities, or actions that modify the saga.
+  bool get hasModifiers => _setters.isNotEmpty || _activities.isNotEmpty || _actions.isNotEmpty;
 
   /// Get types to unschedule.
   List<Type> get unscheduleTypes => List.unmodifiable(_unscheduleTypes);

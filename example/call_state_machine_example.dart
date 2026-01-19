@@ -79,15 +79,27 @@ class RingingTimeout extends TimeoutEvent {
   RingingTimeout(super.sagaId);
 }
 
+class MuteToggled {
+  final String callId;
+  final bool isMuted;
+  MuteToggled(this.callId, this.isMuted);
+}
+
+class DurationUpdated {
+  final String callId;
+  final Duration duration;
+  DurationUpdated(this.callId, this.duration);
+}
+
 // ─────────────────────────────────────────────────────────────────
 // STATE MACHINE - Clean, declarative, self-documenting!
 // ─────────────────────────────────────────────────────────────────
 
 class CallStateMachine extends SagaStateMachine<CallSaga, CallStatus> {
-  final void Function(CallSaga saga, CallStatus from, CallStatus to)?
-      onStateChanged;
+  final void Function(CallSaga saga, CallStatus from, CallStatus to)? onStateChanged;
+  final void Function(CallSaga saga)? onSagaPropertyUpdated;
 
-  CallStateMachine({this.onStateChanged}) {
+  CallStateMachine({this.onStateChanged, this.onSagaPropertyUpdated}) {
     // Event correlation by callId
     correlate<IncomingCallReceived>((e) => e.callId);
     correlate<OutgoingCallStarted>((e) => e.callId);
@@ -96,6 +108,8 @@ class CallStateMachine extends SagaStateMachine<CallSaga, CallStatus> {
     correlate<CallResumed>((e) => e.callId);
     correlate<CallEnded>((e) => e.callId);
     correlate<RingingTimeout>((e) => e.sagaId);
+    correlate<MuteToggled>((e) => e.callId);
+    correlate<DurationUpdated>((e) => e.callId);
 
     // ═══════════════════════════════════════════════════════════════
     // INITIAL STATE - Saga creation
@@ -130,10 +144,7 @@ class CallStateMachine extends SagaStateMachine<CallSaga, CallStatus> {
           .set((saga, _) => saga.callStartedAt = DateTime.now())
           .transitionTo(CallStatus.answered),
       [
-        when<CallEnded>()
-            .unschedule<RingingTimeout>()
-            .transitionToState((ctx) => ctx.event.endReason)
-            .finalize(),
+        when<CallEnded>().unschedule<RingingTimeout>().transitionToState((ctx) => ctx.event.endReason).finalize(),
         when<RingingTimeout>().transitionTo(CallStatus.timeout).finalize(),
       ],
     );
@@ -146,9 +157,11 @@ class CallStateMachine extends SagaStateMachine<CallSaga, CallStatus> {
       CallStatus.answered,
       when<CallHeld>().transitionTo(CallStatus.onHold),
       [
+        // Property-only updates (no state transition) - triggers onSagaUpdated
+        when<MuteToggled>().set((saga, e) => saga.isMuted = e.isMuted),
+        when<DurationUpdated>().set((saga, e) => saga.talkTime = e.duration),
         when<CallEnded>()
-            .set((saga, _) => saga.talkTime =
-                DateTime.now().difference(saga.callStartedAt ?? DateTime.now()))
+            .set((saga, _) => saga.talkTime = DateTime.now().difference(saga.callStartedAt ?? DateTime.now()))
             .transitionTo(CallStatus.completed)
             .finalize(),
       ],
@@ -163,8 +176,7 @@ class CallStateMachine extends SagaStateMachine<CallSaga, CallStatus> {
       when<CallResumed>().transitionTo(CallStatus.answered),
       [
         when<CallEnded>()
-            .set((saga, _) => saga.talkTime =
-                DateTime.now().difference(saga.callStartedAt ?? DateTime.now()))
+            .set((saga, _) => saga.talkTime = DateTime.now().difference(saga.callStartedAt ?? DateTime.now()))
             .transitionTo(CallStatus.completed)
             .finalize(),
       ],
@@ -176,6 +188,11 @@ class CallStateMachine extends SagaStateMachine<CallSaga, CallStatus> {
 
     onAnyTransition((saga, from, to) {
       onStateChanged?.call(saga, from, to);
+    });
+
+    // Property-only changes (mute toggle, duration update without state change)
+    onSagaUpdated((saga) {
+      onSagaPropertyUpdated?.call(saga);
     });
   }
 
@@ -204,16 +221,30 @@ void main() async {
     onStateChanged: (saga, from, to) {
       print('Call ${saga.id}: $from → $to');
     },
+    onSagaPropertyUpdated: (saga) {
+      print('Call ${saga.id} property updated: muted=${saga.isMuted}, talkTime=${saga.talkTime}');
+    },
   );
 
   // Incoming call
-  await machine.dispatch(
-      IncomingCallReceived('call-123', '+1234567890', displayName: 'John'));
+  await machine.dispatch(IncomingCallReceived('call-123', '+1234567890', displayName: 'John'));
   print('Status: ${machine.getSaga("call-123")?.status}'); // ringing
 
   // Answer
   await machine.dispatch(CallAnswered('call-123'));
   print('Status: ${machine.getSaga("call-123")?.status}'); // answered
+
+  // Mute toggle - property change, no state transition
+  await machine.dispatch(MuteToggled('call-123', true));
+  print('Muted: ${machine.getSaga("call-123")?.isMuted}'); // true
+
+  // Duration update - property change, no state transition
+  await machine.dispatch(DurationUpdated('call-123', const Duration(minutes: 5)));
+  print('Talk time: ${machine.getSaga("call-123")?.talkTime}'); // 5 minutes
+
+  // Unmute
+  await machine.dispatch(MuteToggled('call-123', false));
+  print('Muted: ${machine.getSaga("call-123")?.isMuted}'); // false
 
   // Hold
   await machine.dispatch(CallHeld('call-123'));
@@ -224,11 +255,9 @@ void main() async {
   print('Status: ${machine.getSaga("call-123")?.status}'); // answered
 
   // End - saga is finalized and removed from repository
-  final endedSaga =
-      await machine.dispatch(CallEnded('call-123', CallStatus.completed));
+  final endedSaga = await machine.dispatch(CallEnded('call-123', CallStatus.completed));
   print('Was finalized: ${endedSaga?.isFinalized}'); // true (before removal)
-  print(
-      'Still in repo: ${machine.getSaga("call-123") != null}'); // false (removed after finalize)
+  print('Still in repo: ${machine.getSaga("call-123") != null}'); // false (removed after finalize)
 
   machine.dispose();
 }
